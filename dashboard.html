@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>📊 Calls Viewer Dashboard</title>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; font-family:'Helvetica',sans-serif; }
+    body { background:#f5f5f5; }
+    .topbar { background:#2c3e50; color:white; padding:14px 20px; display:flex;
+              align-items:center; gap:14px; flex-wrap:wrap; }
+    .topbar h1 { font-size:18px; }
+    .topbar select { padding:6px; border-radius:4px; border:none; min-width:200px; }
+    .topbar .spacer { flex:1; }
+    .topbar button { padding:7px 12px; border:none; border-radius:4px; color:white;
+                     cursor:pointer; font-weight:bold; }
+    .user-badge { color:#2ecc71; font-weight:bold; }
+    .cards { display:flex; gap:12px; padding:16px 20px; flex-wrap:wrap; }
+    .card { background:white; border:1px solid #ddd; border-radius:6px; padding:14px 22px; }
+    .card .lbl { font-size:12px; color:#888; }
+    .card .val { font-size:22px; font-weight:bold; }
+    .toolbar { padding:6px 20px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .toolbar button { padding:7px 12px; border:none; border-radius:4px; color:white;
+                      cursor:pointer; font-weight:bold; }
+    .toolbar input { padding:7px; border:1px solid #ccc; border-radius:4px; min-width:220px; }
+    table { width:calc(100% - 40px); margin:8px 20px; border-collapse:collapse;
+            background:white; }
+    th, td { padding:8px 10px; text-align:left; border-bottom:1px solid #eee; font-size:13px; }
+    th { background:#ecf0f1; cursor:pointer; user-select:none; }
+    tr:nth-child(even){ background:#fafafa; }
+    tr.selected { background:#3498db !important; color:white; }
+    .green{background:#27ae60}.purple{background:#8e44ad}.blue{background:#3498db}
+    .orange{background:#f39c12}.red{background:#e74c3c}
+    .table-wrap { max-height:60vh; overflow:auto; margin:0 20px; }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <h1>📊 Calls Viewer</h1>
+    <label>State:</label>
+    <select id="stateSelect">
+      <option value="">-- Select State --</option>
+      {% for s in states %}
+        <option value="{{ s.state_code }}">{{ s.state_name }} ({{ s.state_code }})</option>
+      {% endfor %}
+    </select>
+    <button class="green" onclick="document.getElementById('csvFile').click()">📥 Import CSV</button>
+    <input type="file" id="csvFile" accept=".csv" style="display:none" onchange="importCSV()">
+    <button class="purple" onclick="exportCSV()">📤 Export CSV</button>
+    <div class="spacer"></div>
+    <span class="user-badge">👤 {{ username }}</span>
+    <button class="red" onclick="location.href='{{ url_for('logout') }}'">🚪 Logout</button>
+  </div>
+
+  <div class="cards">
+    <div class="card"><div class="lbl">Total</div><div class="val" id="c_total" style="color:#3498db">0</div></div>
+    <div class="card"><div class="lbl">Answered</div><div class="val" id="c_answered" style="color:#2ecc71">0</div></div>
+    <div class="card"><div class="lbl">No Answer</div><div class="val" id="c_noanswer" style="color:#e74c3c">0</div></div>
+    <div class="card"><div class="lbl">Avg Dur</div><div class="val" id="c_avg" style="color:#9b59b6">0s</div></div>
+    <div class="card"><div class="lbl">Last</div><div class="val" id="c_last" style="color:#f39c12">-</div></div>
+  </div>
+
+  <div class="toolbar">
+    <button class="blue" onclick="addRow()">➕ Add</button>
+    <button class="orange" onclick="editRow()">✏️ Edit</button>
+    <button class="red" onclick="deleteRows()">🗑️ Delete</button>
+    <label>🔍</label>
+    <input type="text" id="search" placeholder="Filter..." oninput="renderTable()">
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th onclick="sortBy('id')">ID</th>
+          <th onclick="sortBy('call_date')">Call Date</th>
+          <th onclick="sortBy('phone_number')">Phone Number</th>
+          <th onclick="sortBy('status')">Status</th>
+          <th onclick="sortBy('length_in_sec')">Duration (s)</th>
+          <th onclick="sortBy('campaign')">Campaign</th>
+          <th onclick="sortBy('term_reason')">Term Reason</th>
+          <th onclick="sortBy('user')">User</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+
+<script>
+const FIELDS = ["call_date","phone_number","status","length_in_sec","campaign","term_reason","user"];
+let allRows = [], currentState = "", selectedIds = new Set(), sortField = null, sortRev = false;
+
+document.getElementById("stateSelect").onchange = function() {
+  currentState = this.value;
+  selectedIds.clear();
+  if (!currentState) { allRows = []; renderTable(); resetCards(); return; }
+  loadData();
+};
+
+function resetCards() {
+  c_total.textContent="0"; c_answered.textContent="0"; c_noanswer.textContent="0";
+  c_avg.textContent="0s"; c_last.textContent="-";
+}
+
+async function loadData() {
+  const sum = await (await fetch(`/api/summary/${currentState}`)).json();
+  c_total.textContent = sum.total;
+  c_answered.textContent = sum.answered;
+  c_noanswer.textContent = sum.noanswer;
+  c_avg.textContent = sum.avg_dur + "s";
+  c_last.textContent = sum.last || "-";
+  allRows = await (await fetch(`/api/calls/${currentState}`)).json();
+  renderTable();
+}
+
+function renderTable() {
+  const q = document.getElementById("search").value.toLowerCase();
+  let rows = allRows;
+  if (q) rows = rows.filter(r => FIELDS.concat("id").some(f => String(r[f]??"").toLowerCase().includes(q)));
+  if (sortField) {
+    rows = [...rows].sort((a,b) => {
+      let x=a[sortField]??"", y=b[sortField]??"";
+      return (x>y?1:x<y?-1:0) * (sortRev?-1:1);
+    });
+  }
+  const tbody = document.getElementById("tbody");
+  tbody.innerHTML = "";
+  rows.forEach(r => {
+    const tr = document.createElement("tr");
+    if (selectedIds.has(r.id)) tr.classList.add("selected");
+    tr.innerHTML = `<td>${r.id}</td><td>${r.call_date??""}</td><td>${r.phone_number??""}</td>
+      <td>${r.status??""}</td><td>${r.length_in_sec??""}</td><td>${r.campaign??""}</td>
+      <td>${r.term_reason??""}</td><td>${r.user??""}</td>`;
+    tr.onclick = (e) => {
+      if (!e.ctrlKey) selectedIds.clear();
+      selectedIds.has(r.id) ? selectedIds.delete(r.id) : selectedIds.add(r.id);
+      renderTable();
+    };
+    tr.ondblclick = () => { selectedIds.clear(); selectedIds.add(r.id); editRow(); };
+    tbody.appendChild(tr);
+  });
+}
+
+function sortBy(f) { sortRev = (sortField===f) ? !sortRev : false; sortField=f; renderTable(); }
+
+function promptRecord(existing) {
+  const labels = ["Call Date","Phone Number","Status","Duration (s)","Campaign","Term Reason","User"];
+  const data = {};
+  for (let i=0;i<FIELDS.length;i++) {
+    const v = prompt(labels[i], existing ? (existing[FIELDS[i]]??"") : "");
+    if (v === null) return null;
+    data[FIELDS[i]] = v;
+  }
+  return data;
+}
+
+async function addRow() {
+  if (!currentState) { alert("Select state first"); return; }
+  const data = promptRecord(null);
+  if (!data) return;
+  data.state_code = currentState;
+  await fetch("/api/calls/add", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(data)});
+  loadData();
+}
+
+async function editRow() {
+  if (selectedIds.size !== 1) { alert("Select exactly one row"); return; }
+  const id = [...selectedIds][0];
+  const row = allRows.find(r => r.id === id);
+  const data = promptRecord(row);
+  if (!data) return;
+  await fetch(`/api/calls/update/${id}`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(data)});
+  loadData();
+}
+
+async function deleteRows() {
+  if (selectedIds.size === 0) { alert("Select rows to delete"); return; }
+  if (!confirm(`Delete ${selectedIds.size} row(s)?`)) return;
+  await fetch("/api/calls/delete", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ids:[...selectedIds]})});
+  selectedIds.clear();
+  loadData();
+}
+
+async function importCSV() {
+  const file = document.getElementById("csvFile").files[0];
+  if (!file) return;
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await (await fetch("/api/import", {method:"POST", body:fd})).json();
+  alert(`Inserted: ${res.inserted}\nSkipped: ${res.skipped}`);
+  document.getElementById("csvFile").value = "";
+  if (currentState) loadData();
+}
+
+function exportCSV() {
+  if (!currentState) { alert("Select state first"); return; }
+  window.location.href = `/api/export/${currentState}`;
+}
+</script>
+</body>
+</html>
